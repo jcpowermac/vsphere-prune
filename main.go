@@ -69,6 +69,9 @@ func testNames(cfg cioperatorapi.ReleaseBuildConfiguration) []string {
 // REMOVE job. Test names are long and specific; suffix match on "-<as>" is
 // precise enough (verified by the coverage report in Task 3 Step 2).
 func matchesRemove(as string, removeSet map[string]bool) bool {
+	if as == "" || !strings.Contains(as, "vsphere") {
+		return false
+	}
 	for j := range removeSet {
 		if j == as || strings.HasSuffix(j, "-"+as) {
 			return true
@@ -77,7 +80,96 @@ func matchesRemove(as string, removeSet map[string]bool) bool {
 	return false
 }
 
+// applyRemovals re-walks the config dir and removes test entries whose `as`
+// name matches the remove set. Writes in-place or to a mirror tree under
+// outputDir (relative paths preserved, like writer.go computeRelativePath).
 func applyRemovals(configs, outputDir string, inPlace bool, removeSet map[string]bool) error {
+	var nodeParseErrors []string
+	err := filepath.Walk(configs, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".yaml") {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var doc yaml.Node
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			nodeParseErrors = append(nodeParseErrors, path)
+			return nil // not yaml at all; dry-run walker already classified it
+		}
+		if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+			return nil
+		}
+		root := doc.Content[0]
+		if root.Kind != yaml.MappingNode {
+			return nil
+		}
+		testsNode := findMappingValue(root, "tests")
+		if testsNode == nil || testsNode.Kind != yaml.SequenceNode {
+			return nil
+		}
+		var kept []*yaml.Node
+		changed := false
+		for _, testNode := range testsNode.Content {
+			as := ""
+			if testNode.Kind == yaml.MappingNode {
+				if v := findMappingValue(testNode, "as"); v != nil {
+					as = v.Value
+				}
+			}
+			if as != "" && matchesRemove(as, removeSet) {
+				changed = true
+				continue
+			}
+			kept = append(kept, testNode)
+		}
+		if !changed {
+			return nil
+		}
+		testsNode.Content = kept
+		rel, err := filepath.Rel(configs, path)
+		if err != nil {
+			return err
+		}
+		out, err := yaml.Marshal(&doc)
+		if err != nil {
+			return fmt.Errorf("%s: marshal: %w", path, err)
+		}
+		dest := path
+		if !inPlace {
+			dest = filepath.Join(outputDir, rel)
+			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+				return err
+			}
+		}
+		if err := os.WriteFile(dest, out, 0o644); err != nil {
+			return err
+		}
+		fmt.Printf("APPLIED %s (now %d tests)\n", rel, len(kept))
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(nodeParseErrors) > 0 {
+		fmt.Printf("NODE PARSE ERRORS (skipped files): %d\n", len(nodeParseErrors))
+		for _, e := range nodeParseErrors {
+			fmt.Printf("  %s\n", e)
+		}
+	} else {
+		fmt.Printf("NODE PARSE ERRORS: 0\n")
+	}
+	return nil
+}
+
+// findMappingValue finds a value node for a given key in a mapping node.
+func findMappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	for i := 0; i < len(mapping.Content)-1; i += 2 {
+		if mapping.Content[i].Value == key {
+			return mapping.Content[i+1]
+		}
+	}
 	return nil
 }
 
