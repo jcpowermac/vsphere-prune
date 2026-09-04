@@ -30,3 +30,26 @@ func TestFilterVSphere(t *testing.T) {
 		}
 	}
 }
+
+func TestMatchesRemove(t *testing.T) {
+	remove := map[string]bool{
+		"periodic-ci-openshift-openshift-tests-private-release-4.22-amd64-nightly-vsphere-ipi-f28": true,
+		"pull-ci-openshift-priv-cloud-provider-vsphere-release-4.22-e2e-vsphere":                   true,
+	}
+	cases := []struct {
+		testName string
+		want     bool
+	}{
+		{"vsphere-ipi-f28", true},              // suffix of periodic
+		{"e2e-vsphere", true},                  // suffix of pull-ci
+		{"vsphere-ipi-f28-destructive", false}, // keep-name not in remove set
+		{"azure-ipi-f28", false},
+		{"4.22-upgrade-from-stable-4.21-vsphere-ipi-ovn-dualstack-f28", false}, // only if absent from remove set
+	}
+	for _, c := range cases {
+		if got := matchesRemove(c.testName, remove); got != c.want {
+			t.Errorf("matchesRemove(%q) = %v, want %v", c.testName, got, c.want)
+		}
+	}
+}
+
